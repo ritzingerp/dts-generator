@@ -6,6 +6,12 @@ import * as pathUtil from 'path';
 import * as Promise from 'bluebird';
 import * as ts from 'typescript';
 
+interface ResolveModuleRefParams {
+	moduleRef: string;
+	currentModuleId: string;
+	isDeclaredExternalModule: boolean;
+}
+
 interface Options {
 	baseDir?: string;
 	project?: string;
@@ -23,6 +29,7 @@ interface Options {
 	rootDir?: string;
 	target?: ts.ScriptTarget;
 	sendMessage?: (message: any, ...optionalParams: any[]) => void;
+	resolveModuleRef?: (params: ResolveModuleRefParams) => string;
 	verbose?: boolean;
 }
 
@@ -155,6 +162,10 @@ function isNodeKindExportAssignment(value: ts.Node): value is ts.ExportAssignmen
 	return value && value.kind === ts.SyntaxKind.ExportAssignment;
 }
 
+function isNodeKindModuleDeclaration(value: ts.Node): value is ts.ModuleDeclaration {
+	return value && value.kind === ts.SyntaxKind.ModuleDeclaration;
+}
+
 export default function generate(options: Options): Promise<void> {
 
 	const noop = function (message?: any, ...optionalParams: any[]): void {};
@@ -233,6 +244,8 @@ export default function generate(options: Options): Promise<void> {
 		writeDeclaration(ts.createSourceFile(filename, data, target, true));
 	}
 
+	let declaredExternalModules: string[] = [];
+
 	return new Promise<void>(function (resolve, reject) {
 		output.on('close', () => { resolve(undefined); });
 		output.on('error', reject);
@@ -247,6 +260,19 @@ export default function generate(options: Options): Promise<void> {
 		sendMessage('processing:');
 		let mainExportDeclaration = false;
 		let mainExportAssignment = false;
+
+		program.getSourceFiles().forEach(function (sourceFile) {
+			processTree(sourceFile, function (node) {
+				if (isNodeKindModuleDeclaration(node)) {
+					const name = node.name;
+					if (isNodeKindStringLiteral(name)) {
+						declaredExternalModules.push(name.text);
+					}
+				}
+				return null;
+			});
+		});
+
 		program.getSourceFiles().some(function (sourceFile) {
 			// Source file is a default library, or other dependency from another project, that should not be included in
 			// our bundled output
@@ -310,7 +336,30 @@ export default function generate(options: Options): Promise<void> {
 
 	function writeDeclaration(declarationFile: ts.SourceFile) {
 		const filename = declarationFile.fileName;
+		const currentModuleId = filenameToMid(filename.slice(baseDir.length + 1, -5));
 		const sourceModuleId = options.name ? options.name + filenameToMid(filename.slice(baseDir.length, -5)) : filenameToMid(filename.slice(baseDir.length + 1, -5));
+
+		function resolveModuleId(moduleId: string): string {
+			const isDeclaredExternalModule: boolean = declaredExternalModules.indexOf(moduleId) !== -1;
+
+			if (options.resolveModuleRef) {
+				const resolved: string = options.resolveModuleRef({
+					moduleRef: moduleId,
+					currentModuleId: currentModuleId,
+					isDeclaredExternalModule: isDeclaredExternalModule
+				});
+				if (resolved) {
+					return resolved;
+				}
+			}
+
+			if (moduleId.charAt(0) === '.') {
+				return filenameToMid(pathUtil.join(pathUtil.dirname(sourceModuleId), moduleId));
+			}
+			else if (!isDeclaredExternalModule) {
+				return options.name ? (options.name + '/' + moduleId) : (moduleId);
+			}
+		}
 
 		/* For some reason, SourceFile.externalModuleIndicator is missing from 1.6+, so having
 		 * to use a sledgehammer on the nut */
@@ -321,8 +370,9 @@ export default function generate(options: Options): Promise<void> {
 				if (isNodeKindExternalModuleReference(node)) {
 					const expression = node.expression as ts.LiteralExpression;
 
-					if (expression.text.charAt(0) === '.') {
-						return ' require(\'' + filenameToMid(pathUtil.join(pathUtil.dirname(sourceModuleId), expression.text)) + '\')';
+					const resolved: string = resolveModuleId(expression.text);
+					if (resolved) {
+						return ' require(\'' + resolved + '\')';
 					}
 				}
 				else if (node.kind === ts.SyntaxKind.DeclareKeyword) {
@@ -333,8 +383,10 @@ export default function generate(options: Options): Promise<void> {
 					(isNodeKindExportDeclaration(node.parent) || isNodeKindImportDeclaration(node.parent))
 				) {
 					const text = node.text;
-					if (text.charAt(0) === '.') {
-						return ` '${filenameToMid(pathUtil.join(pathUtil.dirname(sourceModuleId), text))}'`;
+
+					const resolved: string = resolveModuleId(text);
+					if (resolved) {
+						return ` '${resolved}'`;
 					}
 				}
 			});
