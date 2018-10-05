@@ -206,6 +206,27 @@ registerSuite({
 			assert.include(contents, `declare module 'foo/FooImplExportDeclaration'`);
 		});
 	},
+	'relative named': function () {
+		return generate({
+			prefix: 'foo',
+			project: 'tests/support/foo-relative',
+			out: 'tmp/foo.relative-named.d.ts',
+		}).then(function () {
+			const contents = fs.readFileSync('tmp/foo.relative-named.d.ts', { encoding: 'utf8' });
+
+			assert.include(contents, `import { Relative } from 'foo/Relative';`);
+		});
+	},    
+	'relative without name': function () {
+		return generate({
+			project: 'tests/support/foo-relative',
+			out: 'tmp/foo.relative.d.ts',
+		}).then(function () {
+			const contents = fs.readFileSync('tmp/foo.relative.d.ts', { encoding: 'utf8' });
+
+			assert.include(contents, `import { Relative } from 'Relative';`);
+		});
+	},    
 	'add reference types package dependency  ': function () {
 		return generate({
 			baseDir: 'tests/support/foo',
